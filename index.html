@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Suswara - Carnatic Note Identifier</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Arial, sans-serif;
+            background: #f8fafc;
+            color: #222;
+            display: flex;
+            flex-direction: column;
+            min-height: 100vh;
+        }
+        header {
+            background: #2d3748;
+            color: #fff;
+            padding: 2rem 0;
+            text-align: center;
+        }
+        main {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 2rem;
+        }
+        h1 {
+            font-size: 2.2rem;
+            margin-bottom: 0.5rem;
+        }
+        h2 {
+            font-size: 1.5rem;
+            margin-bottom: 1rem;
+            color: #3182ce;
+        }
+        p {
+            font-size: 1.1rem;
+            margin-bottom: 1.5rem;
+            max-width: 600px;
+            text-align: center;
+        }
+        .tuner-container {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.07);
+            padding: 2rem;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            min-width: 320px;
+        }
+        .note-display {
+            font-size: 2.5rem;
+            font-weight: bold;
+            color: #2563eb;
+            margin: 1.5rem 0;
+        }
+        .start-btn {
+            background: #3182ce;
+            color: #fff;
+            border: none;
+            padding: 0.8rem 2rem;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background 0.2s;
+            margin-bottom: 1rem;
+        }
+        .start-btn:hover {
+            background: #2563eb;
+        }
+        .status {
+            color: #718096;
+            font-size: 0.95rem;
+            margin-top: 0.5rem;
+        }
+        footer {
+            text-align: center;
+            padding: 1rem 0;
+            background: #e2e8f0;
+            color: #4a5568;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Suswara</h1>
+        <h2>Carnatic Note Identifier / Tuner</h2>
+        <p>Sing or play a note, and Suswara will identify the closest Carnatic swara for you.</p>
+    </header>
+    <main>
+        <div class="tuner-container">
+            <button class="start-btn" id="start-btn">Start Listening</button>
+            <div class="note-display" id="note-display">--</div>
+            <div class="status" id="status">Click "Start Listening" and allow microphone access.</div>
+        </div>
+    </main>
+    <footer>
+        &copy; 2024 Suswara. All rights reserved.<br>
+        <a href="support.html" style="color:#2563eb; margin-right:1.5rem; text-decoration:none;">Support</a>
+        <a href="privacy.html" style="color:#2563eb; text-decoration:none;">Privacy Policy</a>
+    </footer>
+    <script>
+        // Carnatic swaras and their frequencies (for C tonic, Sa = C4 = 261.63 Hz)
+        const swaras = [
+            { name: "Sa", freq: 261.63 },
+            { name: "Ri₁", freq: 277.18 },
+            { name: "Ri₂/Ga₁", freq: 293.66 },
+            { name: "Ri₃/Ga₂", freq: 311.13 },
+            { name: "Ga₃", freq: 329.63 },
+            { name: "Ma₁", freq: 349.23 },
+            { name: "Ma₂", freq: 369.99 },
+            { name: "Pa", freq: 392.00 },
+            { name: "Da₁", freq: 415.30 },
+            { name: "Da₂/Ni₁", freq: 440.00 },
+            { name: "Da₃/Ni₂", freq: 466.16 },
+            { name: "Ni₃", freq: 493.88 },
+            { name: "Sa (high)", freq: 523.25 }
+        ];
+
+        let audioContext, analyser, source, dataArray, rafId;
+        let isListening = false;
+
+        function autoCorrelate(buf, sampleRate) {
+            // Basic autocorrelation for pitch detection
+            let SIZE = buf.length;
+            let rms = 0;
+            for (let i = 0; i < SIZE; i++) {
+                let val = buf[i] / 128 - 1;
+                rms += val * val;
+            }
+            rms = Math.sqrt(rms / SIZE);
+            if (rms < 0.01) return -1; // too quiet
+
+            let bestOffset = -1, bestCorr = 0, foundGoodCorr = false;
+            let correlations = new Array(SIZE).fill(0);
+            for (let offset = 32; offset < 512; offset++) {
+                let corr = 0;
+                for (let i = 0; i < SIZE - offset; i++) {
+                    corr += Math.abs((buf[i] / 128 - 1) - (buf[i + offset] / 128 - 1));
+                }
+                corr = 1 - corr / (SIZE - offset);
+                correlations[offset] = corr;
+                if (corr > 0.9 && corr > bestCorr) {
+                    bestCorr = corr;
+                    bestOffset = offset;
+                    foundGoodCorr = true;
+                }
+            }
+            if (foundGoodCorr) {
+                let freq = sampleRate / bestOffset;
+                return freq;
+            }
+            return -1;
+        }
+
+        function findClosestSwara(freq) {
+            let minDiff = Infinity, closest = swaras[0];
+            for (let swara of swaras) {
+                let diff = Math.abs(swara.freq - freq);
+                if (diff < minDiff) {
+                    minDiff = diff;
+                    closest = swara;
+                }
+            }
+            return closest;
+        }
+
+        function updateNote() {
+            analyser.getByteTimeDomainData(dataArray);
+            let freq = autoCorrelate(dataArray, audioContext.sampleRate);
+            const noteDisplay = document.getElementById('note-display');
+            if (freq > 0) {
+                let swara = findClosestSwara(freq);
+                noteDisplay.textContent = swara.name;
+                document.getElementById('status').textContent = `Detected: ${freq.toFixed(1)} Hz (Closest: ${swara.name})`;
+            } else {
+                noteDisplay.textContent = '--';
+                document.getElementById('status').textContent = 'Listening...';
+            }
+            rafId = requestAnimationFrame(updateNote);
+        }
+
+        document.getElementById('start-btn').onclick = async function() {
+            if (isListening) return;
+            isListening = true;
+            this.disabled = true;
+            this.textContent = "Listening...";
+            document.getElementById('status').textContent = "Initializing microphone...";
+            try {
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                source = audioContext.createMediaStreamSource(stream);
+                analyser = audioContext.createAnalyser();
+                analyser.fftSize = 2048;
+                dataArray = new Uint8Array(analyser.fftSize);
+                source.connect(analyser);
+                updateNote();
+                document.getElementById('status').textContent = "Listening...";
+            } catch (e) {
+                document.getElementById('status').textContent = "Microphone access denied or unavailable.";
+                this.disabled = false;
+                this.textContent = "Start Listening";
+                isListening = false;
+            }
+        };
+    </script>
+</body>
+</html>
